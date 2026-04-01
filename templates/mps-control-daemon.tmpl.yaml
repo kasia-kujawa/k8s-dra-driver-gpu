@@ -18,6 +18,9 @@ spec:
     spec:
       nodeName: {{ .NodeName }}
       hostPID: true
+      {{- if .HostIPC }}
+      hostIPC: true
+      {{- end }}
       containers:
       - name: mps-control-daemon
         image: {{ .MpsImageName }}

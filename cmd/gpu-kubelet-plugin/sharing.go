@@ -31,6 +31,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/Masterminds/semver"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,6 +50,25 @@ import (
 	configapi "sigs.k8s.io/nvidia-dra-driver-gpu/api/nvidia.com/resource/v1beta1"
 	"sigs.k8s.io/nvidia-dra-driver-gpu/pkg/featuregates"
 )
+
+// voltaComputeCapability is the threshold above which hostIPC is not required
+// for Volta MPS (CUDA compute compability >= 7.0) hostIPC is not needed
+var voltaComputeCapability = semver.MustParse("7.0")
+
+// requiresHostIPC returns true if any of the given CUDA compute capability
+// strings is below Volta (7.0).
+func requiresHostIPC(cudaComputeCapabilities []string) bool {
+	for _, c := range cudaComputeCapabilities {
+		v, err := semver.NewVersion(c)
+		if err != nil {
+			continue
+		}
+		if v.LessThan(voltaComputeCapability) {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	MpsControlFilesDirName       = "mps"
@@ -80,6 +100,7 @@ type MpsControlDaemon struct {
 	logDir    string
 	devices   UUIDProvider
 	manager   *MpsManager
+	hostIPC   bool
 }
 
 type MpsControlDaemonTemplateData struct {
@@ -95,6 +116,7 @@ type MpsControlDaemonTemplateData struct {
 	MpsLogDirectory                 string
 	MpsImageName                    string
 	FeatureGates                    map[string]bool
+	HostIPC                         bool
 }
 
 func NewTimeSlicingManager(deviceLib *deviceLib) *TimeSlicingManager {
@@ -132,7 +154,7 @@ func NewMpsManager(config *Config, deviceLib *deviceLib, hostDriverRoot, templat
 	}
 }
 
-func (m *MpsManager) NewMpsControlDaemon(claimUID string, devices UUIDProvider) *MpsControlDaemon {
+func (m *MpsManager) NewMpsControlDaemon(claimUID string, devices UUIDProvider, cudaComputeCapabilities []string) *MpsControlDaemon {
 	id := m.GetMpsControlDaemonID(claimUID, devices)
 
 	return &MpsControlDaemon{
@@ -146,6 +168,7 @@ func (m *MpsManager) NewMpsControlDaemon(claimUID string, devices UUIDProvider) 
 		logDir:    fmt.Sprintf("%s/%s/%s", m.controlFilesRoot, id, "log"),
 		devices:   devices,
 		manager:   m,
+		hostIPC:   requiresHostIPC(cudaComputeCapabilities),
 	}
 }
 
@@ -210,6 +233,7 @@ func (m *MpsControlDaemon) Start(ctx context.Context, config *configapi.MpsConfi
 		MpsLogDirectory:                 m.logDir,
 		MpsImageName:                    m.manager.config.flags.imageName,
 		FeatureGates:                    featuregates.ToMap(),
+		HostIPC:                         m.hostIPC,
 	}
 
 	if config != nil && config.DefaultActiveThreadPercentage != nil {

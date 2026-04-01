@@ -237,6 +237,16 @@ func (g *PreparedDeviceGroup) VfioDeviceUUIDs() []string {
 	return g.Devices.VfioDevices().UUIDs()
 }
 
+// CudaComputeCapabilities returns the CUDA compute capability strings for all
+// GPU devices in the group.
+func (g *PreparedDeviceGroup) CudaComputeCapabilities() []string {
+	var caps []string
+	for _, device := range g.Devices.Gpus() {
+		caps = append(caps, device.Gpu.Info.cudaComputeCapability)
+	}
+	return caps
+}
+
 func (l PreparedDeviceList) VfioDeviceUUIDs() []string {
 	var uuids []string
 	for _, device := range l.VfioDevices() {

@@ -272,6 +272,18 @@ func (d AllocatableDevices) RemoveSiblingDevices(device *AllocatableDevice) {
 	}
 }
 
+// CudaComputeCapabilities returns the CUDA compute capability strings for all
+// GPU devices in this set. Used to determine MPS daemon requirements.
+func (d AllocatableDevices) CudaComputeCapabilities() []string {
+	var caps []string
+	for _, device := range d {
+		if device.Type() == GpuDeviceType {
+			caps = append(caps, device.Gpu.cudaComputeCapability)
+		}
+	}
+	return caps
+}
+
 func (d *AllocatableDevice) IsHealthy() bool {
 	switch d.Type() {
 	case GpuDeviceType:

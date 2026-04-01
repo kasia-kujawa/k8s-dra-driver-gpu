@@ -831,7 +831,7 @@ func (s *DeviceState) unprepareDevices(ctx context.Context, claimUID string, dev
 
 		// Stop any MPS control daemons started for each group of prepared devices.
 		if featuregates.Enabled(featuregates.MPSSupport) {
-			mpsControlDaemon := s.mpsManager.NewMpsControlDaemon(claimUID, group)
+			mpsControlDaemon := s.mpsManager.NewMpsControlDaemon(claimUID, group, group.CudaComputeCapabilities())
 			if err := mpsControlDaemon.Stop(ctx); err != nil {
 				return fmt.Errorf("error stopping MPS control daemon: %w", err)
 			}
@@ -973,7 +973,7 @@ func (s *DeviceState) applySharingConfig(ctx context.Context, config configapi.S
 		if err != nil {
 			return nil, fmt.Errorf("error getting MPS configuration: %w", err)
 		}
-		mpsControlDaemon := s.mpsManager.NewMpsControlDaemon(string(claim.UID), requestedDevices)
+		mpsControlDaemon := s.mpsManager.NewMpsControlDaemon(string(claim.UID), requestedDevices, requestedDevices.CudaComputeCapabilities())
 		if err := mpsControlDaemon.Start(ctx, mpsc); err != nil {
 			return nil, fmt.Errorf("error starting MPS control daemon: %w", err)
 		}
