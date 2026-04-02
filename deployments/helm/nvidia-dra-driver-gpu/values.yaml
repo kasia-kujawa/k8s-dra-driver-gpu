@@ -26,6 +26,11 @@ nvidiaDriverRoot: /
 # If not specified, the default path inferred from the nvidia-container-toolkit library version will be used.
 nvidiaCDIHookPath: ""
 
+# Overrides the path where the MPS shm dir is mounted in the MPS control daemon pod. Defaults to /driver-root/dev/shm,
+# where driver-root is configured via nvidiaDriverRoot.
+# For GKE COS set this to /dev/shm when nvidiaDriverRoot is set to /home/kubernetes/bin/nvidia/
+mpsShmMountPath: ""
+
 nameOverride: ""
 fullnameOverride: ""
 namespaceOverride: ""

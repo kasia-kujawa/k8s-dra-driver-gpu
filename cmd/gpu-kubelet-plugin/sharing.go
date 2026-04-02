@@ -65,6 +65,7 @@ type MpsManager struct {
 	controlFilesRoot string
 	hostDriverRoot   string
 	templatePath     string
+	mpsShmMountPath  string
 
 	nvdevlib *deviceLib
 }
@@ -95,6 +96,7 @@ type MpsControlDaemonTemplateData struct {
 	MpsLogDirectory                 string
 	MpsImageName                    string
 	FeatureGates                    map[string]bool
+	MpsShmMountPath                 string
 }
 
 func NewTimeSlicingManager(deviceLib *deviceLib) *TimeSlicingManager {
@@ -129,6 +131,7 @@ func NewMpsManager(config *Config, deviceLib *deviceLib, hostDriverRoot, templat
 		templatePath:     templatePath,
 		config:           config,
 		nvdevlib:         deviceLib,
+		mpsShmMountPath:  config.flags.mpsShmMountPath,
 	}
 }
 
@@ -210,6 +213,7 @@ func (m *MpsControlDaemon) Start(ctx context.Context, config *configapi.MpsConfi
 		MpsLogDirectory:                 m.logDir,
 		MpsImageName:                    m.manager.config.flags.imageName,
 		FeatureGates:                    featuregates.ToMap(),
+		MpsShmMountPath:                 m.manager.mpsShmMountPath,
 	}
 
 	if config != nil && config.DefaultActiveThreadPercentage != nil {
