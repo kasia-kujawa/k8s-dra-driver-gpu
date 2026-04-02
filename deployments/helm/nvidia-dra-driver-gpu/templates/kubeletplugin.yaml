@@ -251,6 +251,10 @@ spec:
               fieldPath: metadata.namespace
         - name: IMAGE_NAME
           value: {{ include "nvidia-dra-driver-gpu.fullimage" . }}
+        {{- if .Values.shmPath }}
+        - name: SHM_PATH
+          value: {{ .Values.shmPath | quote }}
+        {{- end }}
         {{- if .Values.nvidiaCDIHookPath }}
         - name: NVIDIA_CDI_HOOK_PATH
           value: "{{ .Values.nvidiaCDIHookPath }}"

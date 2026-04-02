@@ -74,7 +74,7 @@ spec:
         - name: driver-root
           mountPath: /driver-root
         - name: mps-shm-directory
-          mountPath: /driver-root/dev/shm
+          mountPath: {{ .ShmContainerMountPath }}
         - name: mps-pipe-directory
           mountPath: /driver-root/tmp/nvidia-mps
         - name: mps-log-directory
@@ -85,7 +85,7 @@ spec:
           path: {{ .NvidiaDriverRoot }}
       - name: mps-shm-directory
         hostPath:
-          path: {{ .MpsShmDirectory }}
+          path: {{ .ShmDirectory }}
       - name: mps-pipe-directory
         hostPath:
           path: {{ .MpsPipeDirectory }}

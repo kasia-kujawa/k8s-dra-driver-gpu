@@ -61,10 +61,11 @@ type TimeSlicingManager struct {
 }
 
 type MpsManager struct {
-	config           *Config
-	controlFilesRoot string
-	hostDriverRoot   string
-	templatePath     string
+	config                   *Config
+	controlFilesRoot         string
+	hostDriverRoot           string
+	templatePath             string
+	shmPath string
 
 	nvdevlib *deviceLib
 }
@@ -90,11 +91,12 @@ type MpsControlDaemonTemplateData struct {
 	DefaultActiveThreadPercentage   string
 	DefaultPinnedDeviceMemoryLimits map[string]string
 	NvidiaDriverRoot                string
-	MpsShmDirectory                 string
+	ShmDirectory                    string
 	MpsPipeDirectory                string
 	MpsLogDirectory                 string
 	MpsImageName                    string
 	FeatureGates                    map[string]bool
+	ShmContainerMountPath           string
 }
 
 func NewTimeSlicingManager(deviceLib *deviceLib) *TimeSlicingManager {
@@ -123,12 +125,18 @@ func (t *TimeSlicingManager) SetTimeSlice(uuids []string, config *configapi.Time
 func NewMpsManager(config *Config, deviceLib *deviceLib, hostDriverRoot, templatePath string) *MpsManager {
 	controlFilesRoot := filepath.Join(config.DriverPluginPath(), MpsControlFilesDirName)
 
+	shmPath := config.flags.shmPath
+	if shmPath == "" {
+		shmPath = "/driver-root/dev/shm"
+	}
+
 	return &MpsManager{
-		controlFilesRoot: controlFilesRoot,
-		hostDriverRoot:   hostDriverRoot,
-		templatePath:     templatePath,
-		config:           config,
-		nvdevlib:         deviceLib,
+		controlFilesRoot:         controlFilesRoot,
+		hostDriverRoot:           hostDriverRoot,
+		templatePath:             templatePath,
+		config:                   config,
+		nvdevlib:                 deviceLib,
+		shmPath: shmPath,
 	}
 }
 
@@ -205,11 +213,12 @@ func (m *MpsControlDaemon) Start(ctx context.Context, config *configapi.MpsConfi
 		DefaultActiveThreadPercentage:   "",
 		DefaultPinnedDeviceMemoryLimits: nil,
 		NvidiaDriverRoot:                m.manager.hostDriverRoot,
-		MpsShmDirectory:                 m.shmDir,
+		ShmDirectory:                    m.shmDir,
 		MpsPipeDirectory:                m.pipeDir,
 		MpsLogDirectory:                 m.logDir,
 		MpsImageName:                    m.manager.config.flags.imageName,
 		FeatureGates:                    featuregates.ToMap(),
+		ShmContainerMountPath:           m.manager.shmPath,
 	}
 
 	if config != nil && config.DefaultActiveThreadPercentage != nil {
