@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright 2026 The Kubernetes Authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,62 +17,48 @@
 package main
 
 import (
-	"os"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
+// mockFileChecker implements fileChecker for tests.
+// existingPath is the single path Stat should report as existing; empty means nothing exists.
+type mockFileChecker struct {
+	existingPath string
+}
+
+func (m *mockFileChecker) Stat(path string) error {
+	if path == m.existingPath {
+		return nil
+	}
+	return errors.New("not found")
+}
+
 func TestSetMpsShmMountPath(t *testing.T) {
 	testCases := map[string]struct {
-		setupDriverRoot   func(t *testing.T) string
+		existingPath      string
 		expectedMountPath string
 	}{
-		"sh at /bin/sh": {
-			setupDriverRoot: func(t *testing.T) string {
-				t.Helper()
-				dir := t.TempDir()
-				require.NoError(t, os.MkdirAll(filepath.Join(dir, "bin"), 0755))
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "bin", "sh"), []byte{}, 0755))
-				return dir
-			},
-			expectedMountPath: MpsChrootShmMountPath,
+		// /dev/shm exists under the driver root → daemon uses chroot → shm at <driverRootMountDir>/dev/shm.
+		"dev/shm exists under driver root": {
+			existingPath:      filepath.Join(driverRootMountDir, "dev", "shm"),
+			expectedMountPath: filepath.Join(driverRootMountDir, "dev", "shm"),
 		},
-		"sh at /usr/bin/sh": {
-			setupDriverRoot: func(t *testing.T) string {
-				t.Helper()
-				dir := t.TempDir()
-				require.NoError(t, os.MkdirAll(filepath.Join(dir, "usr", "bin"), 0755))
-				require.NoError(t, os.WriteFile(filepath.Join(dir, "usr", "bin", "sh"), []byte{}, 0755))
-				return dir
-			},
-			expectedMountPath: MpsChrootShmMountPath,
-		},
-		"no sh in driver root — case for GKE COS": {
-			setupDriverRoot: func(t *testing.T) string {
-				t.Helper()
-				return t.TempDir()
-			},
-			expectedMountPath: MpsDefaultShmMountPath,
-		},
-		"driver root does not exist": {
-			setupDriverRoot: func(t *testing.T) string {
-				t.Helper()
-				return filepath.Join(t.TempDir(), "nonexistent")
-			},
+		// /dev/shm not present under driver root (e.g. GKE COS) → daemon runs directly
+		// in the container namespace → shm at /dev/shm.
+		"dev/shm does not exist under driver root — case for GKE COS": {
+			existingPath:      "",
 			expectedMountPath: MpsDefaultShmMountPath,
 		},
 	}
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			dir := tc.setupDriverRoot(t)
-			driverRootMountDir = dir
-			t.Cleanup(func() {
-				driverRootMountDir = "/driver-root"
-			})
-			require.Equal(t, tc.expectedMountPath, setMpsShmMountPath())
+			checker := &mockFileChecker{existingPath: tc.existingPath}
+			require.Equal(t, tc.expectedMountPath, setMpsShmMountPath(checker))
 		})
 	}
 }
