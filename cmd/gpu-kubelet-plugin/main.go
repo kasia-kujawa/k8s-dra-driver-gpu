@@ -57,7 +57,6 @@ type Flags struct {
 	healthcheckPort               int
 	klogVerbosity                 int
 	additionalXidsToIgnore        string
-	mpsShmMountPath               string
 }
 
 type Config struct {
@@ -159,13 +158,6 @@ func newApp() *cli.App {
 			Value:       "",
 			Destination: &flags.additionalXidsToIgnore,
 			EnvVars:     []string{"ADDITIONAL_XIDS_TO_IGNORE"},
-		},
-		&cli.StringFlag{
-			Name:        "mps-shm-mount-path",
-			Usage:       "Path where the MPS shm dir is mounted in the MPS control daemon pod.",
-			Value:       "/driver-root/dev/shm",
-			Destination: &flags.mpsShmMountPath,
-			EnvVars:     []string{"MPS_SHM_MOUNT_PATH"},
 		},
 	}
 	cliFlags = append(cliFlags, flags.kubeClientConfig.Flags()...)

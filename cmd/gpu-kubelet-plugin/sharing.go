@@ -54,6 +54,14 @@ const (
 	MpsControlFilesDirName       = "mps"
 	MpsControlDaemonTemplatePath = "/templates/mps-control-daemon.tmpl.yaml"
 	MpsControlDaemonNameFmt      = "mps-control-daemon-%v" // Fill with ClaimUID
+	MpsDefaultShmMountPath       = "/dev/shm"
+	MpsChrootShmMountPath        = "/driver-root/dev/shm"
+)
+
+var (
+	mpsChRootShellPaths = []string{"/bin/sh", "/usr/bin/sh"}
+	// driverRootMountDir is the directory where the driver root is mounted inside the kubelet plugin container
+	driverRootMountDir = "/driver-root"
 )
 
 type TimeSlicingManager struct {
@@ -65,7 +73,6 @@ type MpsManager struct {
 	controlFilesRoot string
 	hostDriverRoot   string
 	templatePath     string
-	mpsShmMountPath  string
 
 	nvdevlib *deviceLib
 }
@@ -97,6 +104,20 @@ type MpsControlDaemonTemplateData struct {
 	MpsImageName                    string
 	FeatureGates                    map[string]bool
 	MpsShmMountPath                 string
+}
+
+// setMpsShmMountPath returns the container path at which the MPS shm should be mounted in the MPS control daemon pod.
+// It mirrors the approach used by the MPS control daemon template:
+// if a shell exists under /driver-root the daemon runs inside a chroot,
+// so the shm must be visible at /driver-root/dev/shm inside the container,
+// otherwise (e.g. GKE COS) the daemon runs directly in the container namespace and expects /dev/shm.
+func setMpsShmMountPath() string {
+	for _, sh := range mpsChRootShellPaths {
+		if _, err := os.Stat(filepath.Join(driverRootMountDir, sh)); err == nil {
+			return MpsChrootShmMountPath
+		}
+	}
+	return MpsDefaultShmMountPath
 }
 
 func NewTimeSlicingManager(deviceLib *deviceLib) *TimeSlicingManager {
@@ -131,7 +152,6 @@ func NewMpsManager(config *Config, deviceLib *deviceLib, hostDriverRoot, templat
 		templatePath:     templatePath,
 		config:           config,
 		nvdevlib:         deviceLib,
-		mpsShmMountPath:  config.flags.mpsShmMountPath,
 	}
 }
 
@@ -213,7 +233,7 @@ func (m *MpsControlDaemon) Start(ctx context.Context, config *configapi.MpsConfi
 		MpsLogDirectory:                 m.logDir,
 		MpsImageName:                    m.manager.config.flags.imageName,
 		FeatureGates:                    featuregates.ToMap(),
-		MpsShmMountPath:                 m.manager.mpsShmMountPath,
+		MpsShmMountPath:                 setMpsShmMountPath(),
 	}
 
 	if config != nil && config.DefaultActiveThreadPercentage != nil {
