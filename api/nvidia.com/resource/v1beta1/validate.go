@@ -22,26 +22,36 @@ import (
 	"sigs.k8s.io/nvidia-dra-driver-gpu/pkg/featuregates"
 )
 
+const (
+	gpuSharingFeatureGateError = "%q is selected as the GPU sharing strategy, but the %q feature gate is not enabled"
+	gpuSharingUnknownStrategy  = "unknown GPU sharing strategy: %v, supported GPU sharing strategies: %s, %s"
+)
+
+// validateSharingStrategy checks that the given strategy is known and its feature gate is enabled.
+func validateSharingStrategy(s string) error {
+	if s == TimeSlicingStrategy {
+		if featuregates.Enabled(featuregates.TimeSlicingSettings) {
+			return nil
+		}
+		return fmt.Errorf(gpuSharingFeatureGateError, TimeSlicingStrategy, featuregates.TimeSlicingSettings)
+	}
+	if s == MpsStrategy {
+		if featuregates.Enabled(featuregates.MPSSupport) {
+			return nil
+		}
+		return fmt.Errorf(gpuSharingFeatureGateError, MpsStrategy, featuregates.MPSSupport)
+	}
+	return fmt.Errorf(gpuSharingUnknownStrategy, s, TimeSlicingStrategy, MpsStrategy)
+}
+
 // Validate ensures that GpuSharingStrategy has a valid set of values.
 func (s GpuSharingStrategy) Validate() error {
-	if featuregates.Enabled(featuregates.TimeSlicingSettings) && s == TimeSlicingStrategy {
-		return nil
-	}
-	if featuregates.Enabled(featuregates.MPSSupport) && s == MpsStrategy {
-		return nil
-	}
-	return fmt.Errorf("unknown GPU sharing strategy: %v", s)
+	return validateSharingStrategy(string(s))
 }
 
 // Validate ensures that MigDeviceSharingStrategy has a valid set of values.
 func (s MigDeviceSharingStrategy) Validate() error {
-	if featuregates.Enabled(featuregates.TimeSlicingSettings) && s == TimeSlicingStrategy {
-		return nil
-	}
-	if featuregates.Enabled(featuregates.MPSSupport) && s == MpsStrategy {
-		return nil
-	}
-	return fmt.Errorf("unknown GPU sharing strategy: %v", s)
+	return validateSharingStrategy(string(s))
 }
 
 // Validate ensures that TimeSliceInterval has a valid set of values.
@@ -50,7 +60,8 @@ func (t TimeSliceInterval) Validate() error {
 	case DefaultTimeSlice, ShortTimeSlice, MediumTimeSlice, LongTimeSlice:
 		return nil
 	}
-	return fmt.Errorf("unknown time-slice interval: %v", t)
+	return fmt.Errorf("unknown time-slice interval: %v, supported time-slice intervals: %s, %s, %s, %s",
+		t, DefaultTimeSlice, ShortTimeSlice, MediumTimeSlice, LongTimeSlice)
 }
 
 // Validate ensures that TimeSlicingConfig has a valid set of values.

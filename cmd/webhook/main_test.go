@@ -113,7 +113,7 @@ func TestResourceClaimValidatingWebhook(t *testing.T) {
 				),
 			),
 			expectedAllowed: false,
-			expectedMessage: "2 configs failed to validate: object at spec.devices.config[0].opaque.parameters is invalid: unknown time-slice interval: Invalid Interval; object at spec.devices.config[1].opaque.parameters is invalid: active thread percentage must not be negative",
+			expectedMessage: "2 configs failed to validate: object at spec.devices.config[0].opaque.parameters is invalid: unknown time-slice interval: Invalid Interval, supported time-slice intervals: Default, Short, Medium, Long; object at spec.devices.config[1].opaque.parameters is invalid: active thread percentage must not be negative",
 		},
 		"valid GpuConfig in ResourceClaimTemplate": {
 			featureGates: map[string]bool{
@@ -157,7 +157,7 @@ func TestResourceClaimValidatingWebhook(t *testing.T) {
 				),
 			),
 			expectedAllowed: false,
-			expectedMessage: "2 configs failed to validate: object at spec.spec.devices.config[0].opaque.parameters is invalid: unknown time-slice interval: Invalid Interval; object at spec.spec.devices.config[1].opaque.parameters is invalid: active thread percentage must not be negative",
+			expectedMessage: "2 configs failed to validate: object at spec.spec.devices.config[0].opaque.parameters is invalid: unknown time-slice interval: Invalid Interval, supported time-slice intervals: Default, Short, Medium, Long; object at spec.spec.devices.config[1].opaque.parameters is invalid: active thread percentage must not be negative",
 			featureGates: map[string]bool{
 				string(featuregates.TimeSlicingSettings): true,
 				string(featuregates.MPSSupport):          true,
@@ -221,7 +221,7 @@ func TestResourceClaimValidatingWebhook(t *testing.T) {
 				),
 			),
 			expectedAllowed: false,
-			expectedMessage: "1 configs failed to validate: object at spec.devices.config[0].opaque.parameters is invalid: unknown time-slice interval: Invalid Interval",
+			expectedMessage: "1 configs failed to validate: object at spec.devices.config[0].opaque.parameters is invalid: unknown time-slice interval: Invalid Interval, supported time-slice intervals: Default, Short, Medium, Long",
 		},
 		"invalid GpuConfig in ResourceClaimTemplate v1 (tests conversion)": {
 			featureGates: map[string]bool{
@@ -321,7 +321,7 @@ func TestResourceClaimValidatingWebhook(t *testing.T) {
 				),
 			),
 			expectedAllowed: false,
-			expectedMessage: "1 configs failed to validate: object at spec.spec.devices.config[0].opaque.parameters is invalid: unknown time-slice interval: Invalid Interval",
+			expectedMessage: "1 configs failed to validate: object at spec.spec.devices.config[0].opaque.parameters is invalid: unknown time-slice interval: Invalid Interval, supported time-slice intervals: Default, Short, Medium, Long",
 		},
 
 		// Feature gate disabled tests - these should fail when feature gates are off
@@ -343,7 +343,7 @@ func TestResourceClaimValidatingWebhook(t *testing.T) {
 				),
 			),
 			expectedAllowed: false,
-			expectedMessage: "1 configs failed to validate: object at spec.devices.config[0].opaque.parameters is invalid: unknown GPU sharing strategy: TimeSlicing",
+			expectedMessage: `1 configs failed to validate: object at spec.devices.config[0].opaque.parameters is invalid: "TimeSlicing" is selected as the GPU sharing strategy, but the "TimeSlicingSettings" feature gate is not enabled`,
 		},
 		"MpsStrategy rejected when MPSSupport feature gate is disabled": {
 			featureGates: map[string]bool{
@@ -363,7 +363,7 @@ func TestResourceClaimValidatingWebhook(t *testing.T) {
 				),
 			),
 			expectedAllowed: false,
-			expectedMessage: "1 configs failed to validate: object at spec.devices.config[0].opaque.parameters is invalid: unknown GPU sharing strategy: MPS",
+			expectedMessage: `1 configs failed to validate: object at spec.devices.config[0].opaque.parameters is invalid: "MPS" is selected as the GPU sharing strategy, but the "MPSSupport" feature gate is not enabled`,
 		},
 		"TimeSlicingStrategy rejected in ResourceClaimTemplate when TimeSlicingSettings feature gate is disabled": {
 			featureGates: map[string]bool{
@@ -383,7 +383,7 @@ func TestResourceClaimValidatingWebhook(t *testing.T) {
 				),
 			),
 			expectedAllowed: false,
-			expectedMessage: "1 configs failed to validate: object at spec.spec.devices.config[0].opaque.parameters is invalid: unknown GPU sharing strategy: TimeSlicing",
+			expectedMessage: `1 configs failed to validate: object at spec.spec.devices.config[0].opaque.parameters is invalid: "TimeSlicing" is selected as the GPU sharing strategy, but the "TimeSlicingSettings" feature gate is not enabled`,
 		},
 		"MpsStrategy rejected in ResourceClaimTemplate when MPSSupport feature gate is disabled": {
 			featureGates: map[string]bool{
@@ -403,7 +403,7 @@ func TestResourceClaimValidatingWebhook(t *testing.T) {
 				),
 			),
 			expectedAllowed: false,
-			expectedMessage: "1 configs failed to validate: object at spec.spec.devices.config[0].opaque.parameters is invalid: unknown GPU sharing strategy: MPS",
+			expectedMessage: `1 configs failed to validate: object at spec.spec.devices.config[0].opaque.parameters is invalid: "MPS" is selected as the GPU sharing strategy, but the "MPSSupport" feature gate is not enabled`,
 		},
 	}
 
