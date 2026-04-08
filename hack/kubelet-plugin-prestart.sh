@@ -85,22 +85,36 @@ validate_and_exit_on_success () {
         # Run with clean environment (only LD_PRELOAD; nvidia-smi has only this
         # dependency). Emit message before invocation (nvidia-smi may be slow or
         # hang).
-        echo "invoke: env -i LD_PRELOAD=${NV_LIB_PATH} ${NV_PATH}"
+        #
+        # Use `nvidia-smi -L` (list GPUs) rather than bare `nvidia-smi`:
+        # - bare nvidia-smi exits 0 as long as the driver is loaded, even if
+        #   no GPU devices are enumerable yet (the window that causes empty
+        #   ResourceSlices on GKE COS).
+        # - `nvidia-smi -L` exits 0 AND prints one "GPU N: ..." line per device,
+        #   so we can assert that at least one GPU is visible before releasing
+        #   the init container.
+        echo "invoke: env -i LD_PRELOAD=${NV_LIB_PATH} ${NV_PATH} -L"
 
-        # Always show stderr, maybe hide or filter stdout?
-        env -i LD_PRELOAD="${NV_LIB_PATH}" "${NV_PATH}"
+        GPU_LIST=$(env -i LD_PRELOAD="${NV_LIB_PATH}" "${NV_PATH}" -L 2>&1)
         RCODE="$?"
+        echo "${GPU_LIST}"
 
         # For checking GPU driver health: rely on nvidia-smi's exit code. Rely
         # on code 0 signaling that the driver is properly set up. See section
         # 'RETURN VALUE' in the nvidia-smi man page for meaning of error codes.
         if [ ${RCODE} -eq 0 ]; then
-            echo "nvidia-smi returned with code 0: success, leave"
+            # Count lines starting with "GPU " — each represents one enumerated device.
+            GPU_COUNT=$(echo "${GPU_LIST}" | grep -c "^GPU ")
+            if [ "${GPU_COUNT}" -gt 0 ]; then
+                echo "nvidia-smi -L reports ${GPU_COUNT} GPU(s): success, leave"
 
-            # Exit script indicating success (leave init container).
-            exit 0
+                # Exit script indicating success (leave init container).
+                exit 0
+            fi
+            echo "nvidia-smi -L exited 0 but reported no GPU devices (driver still initializing)"
+        else
+            echo "exit code: ${RCODE}"
         fi
-        echo "exit code: ${RCODE}"
     fi
 
     # Reduce log volume: log hints only every Nth attempt.
