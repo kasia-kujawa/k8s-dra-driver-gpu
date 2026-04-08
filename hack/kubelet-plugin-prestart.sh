@@ -83,24 +83,33 @@ validate_and_exit_on_success () {
 
     if [ -n "${NV_PATH}" ] && [ -n "${NV_LIB_PATH}" ]; then
         # Run with clean environment (only LD_PRELOAD; nvidia-smi has only this
-        # dependency). Emit message before invocation (nvidia-smi may be slow or
-        # hang).
-        echo "invoke: env -i LD_PRELOAD=${NV_LIB_PATH} ${NV_PATH}"
+        # dependency). Use `-L` to list devices: bare nvidia-smi exits 0 even
+        # when no devices are enumerable yet; `-L` output is non-empty only
+        # when at least one device is visible.
+        # This will prevent a ResourceSlice without any device in the spec.
 
-        # Always show stderr, maybe hide or filter stdout?
-        env -i LD_PRELOAD="${NV_LIB_PATH}" "${NV_PATH}"
+        # Emit message before invocation (nvidia-smi may be slow or hang).
+        echo "invoke: env -i LD_PRELOAD=${NV_LIB_PATH} ${NV_PATH} -L"
+
+        GPU_LIST=$(env -i LD_PRELOAD="${NV_LIB_PATH}" "${NV_PATH}" -L 2>&1)
         RCODE="$?"
+        echo "${GPU_LIST}"
 
-        # For checking GPU driver health: rely on nvidia-smi's exit code. Rely
-        # on code 0 signaling that the driver is properly set up. See section
-        # 'RETURN VALUE' in the nvidia-smi man page for meaning of error codes.
+        # Rely on exit code 0 signaling that the driver is properly set up.
+        # See section 'RETURN VALUE' in the nvidia-smi man page.
+        # Count non-empty lines when exit code is 0 to check that devices are enumerable
         if [ ${RCODE} -eq 0 ]; then
-            echo "nvidia-smi returned with code 0: success, leave"
+            GPU_COUNT=$(echo "${GPU_LIST}" | grep -c ".")
+            if [ "${GPU_COUNT}" -gt 0 ]; then
+                echo "nvidia-smi -L reports ${GPU_COUNT} device(s): success, leave"
 
-            # Exit script indicating success (leave init container).
-            exit 0
+                # Exit script indicating success (leave init container).
+                exit 0
+            fi
+            echo "nvidia-smi -L exited 0 but reported no GPU devices (driver still initializing)"
+        else
+            echo "nvidia-smi -L exited with code ${RCODE}"
         fi
-        echo "exit code: ${RCODE}"
     fi
 
     # Reduce log volume: log hints only every Nth attempt.
