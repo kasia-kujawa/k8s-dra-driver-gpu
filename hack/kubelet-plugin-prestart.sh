@@ -32,6 +32,110 @@ emit_common_err () {
         "actually been installed under that path.\n"
 }
 
+# gpu_device_nodes_ready returns 0 (true) when every NVIDIA GPU PCI device
+# visible in sysfs has its corresponding /dev file present.
+#
+# For GPUs bound to the nvidia driver: the kernel creates /dev/nvidia0,
+#   /dev/nvidia1, ... only when it finishes binding the GPU. nvidia-smi
+#   --version exits 0 as soon as the driver library loads, before those files
+#   exist. Waiting for /dev/nvidia* closes that race. We count PCI devices
+#   with driver->nvidia and check the same number of /dev/nvidia[0-9]* files
+#   exist, avoiding the need to resolve minor numbers from sysfs.
+#
+# For GPUs bound to the vfio-pci driver: the kernel creates /dev/vfio/<group>
+#   only when vfio-pci finishes binding the device. The iommu_group number
+#   (used as the /dev/vfio/ filename) is read from the sysfs symlink.
+#
+# If any GPU PCI device is not yet bound to any driver, returns 1 (not ready).
+gpu_device_nodes_ready () {
+    local sysfs_pci="/sys/bus/pci/devices"
+
+    local nvidia_pci_count=0
+    local vfio_pci_count=0
+    local unbound_count=0
+
+    for dev in "${sysfs_pci}"/*/; do
+        local vendor class driver_path driver_name
+        vendor=$(cat "${dev}vendor" 2>/dev/null)
+        class=$(cat "${dev}class" 2>/dev/null)
+
+        # NVIDIA vendor ID (PCINvidiaVendorID = 0x10de).
+
+        if [ "${vendor}" != "0x10de" ]; then
+            continue
+        fi
+
+        # Class 0x030200 = 3D Controller (modern GPUs), 0x030000 = VGA compatible controller (older GPUs).
+        # Mirrors go-nvlib's IsGPU()
+        # see: https://github.com/NVIDIA/go-nvlib/blob/68058cecb77b8d5f014caec9a8e54e3485000b8e/pkg/nvpci/nvpci.go#L142
+        # Skips other NVIDIA PCI functions (NVSwitches, audio controllers, etc.) which have different classes.
+        if [ "${class}" != "0x030200" ] && [ "${class}" != "0x030000" ]; then
+            continue
+        fi
+
+        # ${dev}driver is a sysfs symlink to the bound driver, e.g.:
+        #   /sys/bus/pci/devices/0000:00:04.0/driver -> ../../../../bus/drivers/nvidia
+        # readlink returns the symlink target; empty string if not bound to any driver.
+        driver_path=$(readlink "${dev}driver" 2>/dev/null)
+        # basename extracts the last path component — the driver name, e.g. "nvidia" or "vfio-pci".
+        # Empty string when driver_path is empty (GPU not yet bound to any driver).
+        driver_name=$(basename "${driver_path}" 2>/dev/null)
+
+        case "${driver_name}" in
+            nvidia)
+                nvidia_pci_count=$((nvidia_pci_count + 1))
+                ;;
+            vfio-pci)
+                # The IOMMU groups PCI devices that share memory address space.
+                # vfio-pci uses the IOMMU group number as the identifier for the
+                # /dev/vfio/<group> character device it creates — that is how the
+                # PCI device in sysfs maps to the /dev/vfio/ node.
+                # iommu_group is a sysfs symlink, e.g.:
+                #   /sys/bus/pci/devices/0000:00:04.0/iommu_group -> ../../../kernel/iommu_groups/5
+                # basename extracts the group number (e.g. "5").
+                local iommu_group
+                iommu_group=$(basename "$(readlink "${dev}iommu_group" 2>/dev/null)" 2>/dev/null)
+                # When vfio-pci finishes binding the GPU, the kernel creates
+                # /dev/vfio/<group> as a character device (-c). That is the file
+                # a VM hypervisor (KubeVirt/QEMU) opens to get direct hardware
+                # access to the GPU. Not present yet means binding is not complete.
+                if [ -z "${iommu_group}" ] || [ ! -c "/dev/vfio/${iommu_group}" ]; then
+                    echo "/dev/vfio/${iommu_group} not yet present"
+                    return 1
+                fi
+                vfio_pci_count=$((vfio_pci_count + 1))
+                ;;
+            "")
+                # Driver symlink absent — GPU not yet bound to any driver.
+                echo "GPU at ${dev} not yet bound to a driver"
+                unbound_count=$((unbound_count + 1))
+                ;;
+            *)
+                # Bound to an unexpected driver; not our concern.
+                ;;
+        esac
+    done
+
+    if [ "${unbound_count}" -gt 0 ]; then
+        return 1
+    fi
+
+    # For nvidia-bound GPUs: count /dev/nvidia[0-9]* files and compare to the
+    # number of PCI devices bound to the nvidia driver. Minor number resolution
+    # from sysfs is not needed — a matching count is sufficient.
+    if [ "${nvidia_pci_count}" -gt 0 ]; then
+        local nvidia_dev_count
+        nvidia_dev_count=$(ls /dev/nvidia[0-9]* 2>/dev/null | wc -l)
+        if [ "${nvidia_dev_count}" -lt "${nvidia_pci_count}" ]; then
+            echo "/dev/nvidia* files: ${nvidia_dev_count} present, ${nvidia_pci_count} expected"
+            return 1
+        fi
+    fi
+
+    echo "GPU /dev files ready: ${nvidia_pci_count} nvidia, ${vfio_pci_count} vfio-pci"
+    return 0
+}
+
 validate_and_exit_on_success () {
     echo -n "$(date -u +"%Y-%m-%dT%H:%M:%SZ")  /driver-root (${NVIDIA_DRIVER_ROOT} on host): "
 
@@ -99,10 +203,18 @@ validate_and_exit_on_success () {
         # on code 0 signaling that the driver is properly set up. See section
         # 'RETURN VALUE' in the nvidia-smi man page for meaning of error codes.
         if [ ${RCODE} -eq 0 ]; then
-            echo "nvidia-smi returned with code 0: success, leave"
+            echo "nvidia-smi returned with code 0"
 
-            # Exit script indicating success (leave init container).
-            exit 0
+            # nvidia-smi --version confirms the driver library is loaded, but the
+            # kernel creates /dev/nvidia* only when it finishes binding each GPU —
+            # there is a short window where nvidia-smi exits 0 but /dev/nvidia*
+            # files do not exist yet. Wait for those files before exiting.
+            if gpu_device_nodes_ready; then
+                echo "GPU /dev files ready: success, leave"
+                exit 0
+            fi
+            echo "GPU /dev files not yet present, retrying..."
+            return
         fi
         echo "exit code: ${RCODE}"
     fi
