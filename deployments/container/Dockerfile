@@ -147,6 +147,7 @@ COPY --from=toolkit /artifacts/rpm/usr/bin/nvidia-cdi-hook    /usr/bin/nvidia-cd
 COPY --from=build   /artifacts/compute-domain-controller      /usr/bin/compute-domain-controller
 COPY --from=build   /artifacts/compute-domain-kubelet-plugin  /usr/bin/compute-domain-kubelet-plugin
 COPY --from=build   /artifacts/compute-domain-daemon          /usr/bin/compute-domain-daemon
+COPY --from=build   /artifacts/gpu-readiness-init             /usr/bin/gpu-readiness-init
 COPY --from=build   /artifacts/gpu-kubelet-plugin             /usr/bin/gpu-kubelet-plugin
 COPY --from=build   /artifacts/webhook                        /usr/bin/webhook
 
