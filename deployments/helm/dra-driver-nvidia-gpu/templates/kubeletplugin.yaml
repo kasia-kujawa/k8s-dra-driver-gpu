@@ -80,6 +80,27 @@ spec:
           # propagation will see it.").
           mountPropagation: HostToContainer
           {{- end }}
+      {{- if .Values.kubeletPlugin.gpuReadinessInit.enabled }}
+      - name: gpu-readiness-init
+        image: {{ include "dra-driver-nvidia-gpu.fullimage" . }}
+        securityContext:
+          privileged: true
+        command: [gpu-readiness-init]
+        env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: void
+        - name: DEVICE_ENUMERATION_RETRY_STEPS
+          value: {{ .Values.kubeletPlugin.gpuReadinessInit.deviceEnumerationRetrySteps | quote }}
+        - name: DEVICE_ENUMERATION_RETRY_MAX_INTERVAL
+          value: {{ .Values.kubeletPlugin.gpuReadinessInit.deviceEnumerationRetryMaxInterval | quote }}
+        volumeMounts:
+        - name: driver-root
+          mountPath: /driver-root
+          readOnly: true
+          {{- if ne "/" .Values.nvidiaDriverRoot }}
+          mountPropagation: HostToContainer
+          {{- end }}
+      {{- end }}
       containers:
       {{- if .Values.resources.computeDomains.enabled }}
       - name: compute-domains
