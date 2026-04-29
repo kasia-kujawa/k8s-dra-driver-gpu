@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -32,7 +33,6 @@ import (
 	"github.com/urfave/cli/v2"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
-
 	"sigs.k8s.io/dra-driver-nvidia-gpu/internal/driverroot"
 	"sigs.k8s.io/dra-driver-nvidia-gpu/internal/info"
 	"sigs.k8s.io/dra-driver-nvidia-gpu/pkg/featuregates"
@@ -116,11 +116,16 @@ func newApp() *cli.App {
 }
 
 func run(ctx context.Context, flags *Flags) error {
-	libraryPath, err := driverroot.Root(flags.containerDriverRoot).GetDriverLibraryPath()
+	root := driverroot.Root(flags.containerDriverRoot)
+
+	libraryPath, err := root.GetDriverLibraryPath()
 	if err != nil {
 		return fmt.Errorf("locate libnvidia-ml.so.1: %w", err)
 	}
 	klog.Infof("using driver library: %s", libraryPath)
+
+	devRoot := root.GetDevRoot()
+	klog.Infof("using devRoot: %s", devRoot)
 
 	nvmllib := nvml.New(nvml.WithLibraryPath(libraryPath))
 	nvpcil := nvpci.New()
@@ -135,7 +140,7 @@ func run(ctx context.Context, flags *Flags) error {
 
 	passthroughEnabled := featuregates.Enabled(featuregates.PassthroughSupport)
 	err = wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
-		return gpusReady(nvmllib, nvpcil, passthroughEnabled)
+		return gpusReady(nvmllib, nvpcil, passthroughEnabled, devRoot)
 	})
 
 	switch {
@@ -166,14 +171,15 @@ type nvmlClient interface {
 // Decision matrix:
 //
 //	PassthroughSupport disabled:
-//	  nvml_count == total_pci_count                 → ready
-//	  nvml_count < total_pci_count                  → retry
+//	  nvml_count == total_pci_count AND /dev/nvidia* nodes present → ready
+//	  nvml_count < total_pci_count                                 → retry
+//	  /dev/nvidia* nodes absent                                    → retry
 //
 //	PassthroughSupport enabled:
 //	  nvml_count + vfio_count == total_pci_count    → ready
 //	  some GPUs unbound                             → retry
 //	  counts don't add up                           → retry
-func gpusReady(nvmllib nvmlClient, nvpcil nvpci.Interface, passthroughEnabled bool) (bool, error) {
+func gpusReady(nvmllib nvmlClient, nvpcil nvpci.Interface, passthroughEnabled bool, devRoot string) (bool, error) {
 	nvmlCount, err := getNVMLDeviceCount(nvmllib)
 	if err != nil {
 		if isTransientNVMLError(err) {
@@ -198,7 +204,14 @@ func gpusReady(nvmllib nvmlClient, nvpcil nvpci.Interface, passthroughEnabled bo
 			klog.Infof("NVML returned %d GPU(s), %d expected — driver still initializing, retrying...", nvmlCount, totalPCI)
 			return false, nil
 		}
-		klog.Infof("found %d GPU(s) via NVML", nvmlCount)
+		// NVML reports all GPUs, but /dev/nvidia* character devices are created
+		// after NVML becomes functional. The main plugin's VisitDevices opens them
+		// immediately, so we must not exit until they exist.
+		if !nvidiaDevNodesReady(devRoot, nvmlCount) {
+			klog.Infof("NVML reports %d GPU(s) but /dev/nvidia* device nodes not yet present — retrying...", nvmlCount)
+			return false, nil
+		}
+		klog.Infof("found %d GPU(s) via NVML, all /dev/nvidia* device nodes present", nvmlCount)
 		return true, nil
 	}
 
@@ -251,6 +264,34 @@ func getNVMLDeviceCount(nvmllib nvmlClient) (int, error) {
 		return 0, ret
 	}
 	return count, nil
+}
+
+// nvidiaDevNodesReady reports whether the expected /dev/nvidia* character devices
+// are present under devRoot.
+//
+// nvidia.ko creates /dev/nvidia<N> (one per GPU, arbitrary minor numbers) and
+// /dev/nvidiactl as its last initialization step — after NVML already reports
+// the GPUs. The main plugin's VisitDevices opens these nodes immediately on
+// startup, so we must not declare readiness until every node is present.
+func nvidiaDevNodesReady(devRoot string, gpuCount int) bool {
+	// Use a glob to find all /dev/nvidia<digits> nodes regardless of minor numbering.
+	matches, err := filepath.Glob(filepath.Join(devRoot, "dev", "nvidia[0-9]*"))
+	klog.Infof("found /dev/nvidia<N> node(s): %v", matches)
+	if err != nil || len(matches) < gpuCount {
+		found := 0
+		if err == nil {
+			found = len(matches)
+		}
+		klog.Infof("%d of %d /dev/nvidia<N> node(s) present under %s, found: %v", found, gpuCount, devRoot, matches)
+		return false
+	}
+
+	p := filepath.Join(devRoot, "dev", "nvidiactl")
+	if _, err := os.Stat(p); err != nil {
+		klog.Infof("/dev/nvidiactl not yet present under %s", devRoot)
+		return false
+	}
+	return true
 }
 
 // isTransientNVMLError reports whether err is an NVML "not ready yet" error
