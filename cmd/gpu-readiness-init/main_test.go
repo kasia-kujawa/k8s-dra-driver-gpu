@@ -29,21 +29,29 @@ import (
 )
 
 type mockNVML struct {
-	initReturn  nvml.Return
-	countReturn nvml.Return
-	count       int
+	initReturn   nvml.Return
+	countReturn  nvml.Return
+	count        int
+	handleReturn nvml.Return
 }
 
 func (m *mockNVML) InitWithFlags(uint32) nvml.Return   { return m.initReturn }
 func (m *mockNVML) Shutdown() nvml.Return              { return nvml.SUCCESS }
 func (m *mockNVML) DeviceGetCount() (int, nvml.Return) { return m.count, m.countReturn }
+func (m *mockNVML) DeviceGetHandleByIndex(int) (nvml.Device, nvml.Return) {
+	return nil, m.handleReturn
+}
 
 func nvmlOK(count int) *mockNVML {
-	return &mockNVML{initReturn: nvml.SUCCESS, countReturn: nvml.SUCCESS, count: count}
+	return &mockNVML{initReturn: nvml.SUCCESS, countReturn: nvml.SUCCESS, count: count, handleReturn: nvml.SUCCESS}
 }
 
 func nvmlInitErr(ret nvml.Return) *mockNVML {
 	return &mockNVML{initReturn: ret}
+}
+
+func nvmlHandleErr(count int, ret nvml.Return) *mockNVML {
+	return &mockNVML{initReturn: nvml.SUCCESS, countReturn: nvml.SUCCESS, count: count, handleReturn: ret}
 }
 
 func pciGPU(driver string) *nvpci.NvidiaPCIDevice {
@@ -148,6 +156,11 @@ func TestGpusReady(t *testing.T) {
 			nvpcil:       nvpcilWith(pciGPU(pciDriverNvidia), pciGPU(pciDriverNvidia)),
 			setupDevRoot: func(t *testing.T) string { return t.TempDir() },
 		},
+		"no-passthrough, nvml=1, pci=1, handle-not-ready → retry": {
+			nvmllib:      nvmlHandleErr(1, nvml.ERROR_NOT_READY),
+			nvpcil:       nvpcilWith(pciGPU(pciDriverNvidia)),
+			setupDevRoot: func(t *testing.T) string { return t.TempDir() },
+		},
 		"no-passthrough, nvml-transient-error → retry": {
 			nvmllib:      nvmlInitErr(nvml.ERROR_DRIVER_NOT_LOADED),
 			nvpcil:       nvpcilWith(pciGPU(pciDriverNvidia)),
@@ -223,6 +236,7 @@ func TestIsTransientNVMLError(t *testing.T) {
 	}{
 		"ERROR_UNINITIALIZED":      {nvml.ERROR_UNINITIALIZED, true},
 		"ERROR_DRIVER_NOT_LOADED":  {nvml.ERROR_DRIVER_NOT_LOADED, true},
+		"ERROR_NOT_READY":          {nvml.ERROR_NOT_READY, true},
 		"ERROR_UNKNOWN":            {nvml.ERROR_UNKNOWN, false},
 		"ERROR_INSUFFICIENT_POWER": {nvml.ERROR_INSUFFICIENT_POWER, false},
 		"non-nvml error":           {assert.AnError, false},

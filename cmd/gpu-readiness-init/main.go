@@ -160,6 +160,7 @@ type nvmlClient interface {
 	InitWithFlags(uint32) nvml.Return
 	Shutdown() nvml.Return
 	DeviceGetCount() (int, nvml.Return)
+	DeviceGetHandleByIndex(int) (nvml.Device, nvml.Return)
 }
 
 // gpusReady returns (true, nil) when every NVIDIA GPU on the node is accounted
@@ -243,8 +244,13 @@ func gpusReady(nvmllib nvmlClient, nvpcil nvpci.Interface, passthroughEnabled bo
 	return true, nil
 }
 
-// getNVMLDeviceCount initializes NVML, returns the number of visible GPUs, then shuts NVML down.
-// Any NVML failure is returned as an error for the caller to classify.
+// getNVMLDeviceCount initializes NVML, verifies that all device handles are
+// obtainable (mirroring what VisitDevices does in the main plugin), then shuts
+// NVML down. Any NVML failure is returned as an error for the caller to classify.
+//
+// Verifying handles — not just the count — is necessary because DeviceGetCount
+// can return N while DeviceGetHandleByIndex still fails: the kernel module
+// finishes updating its count before the per-device state is fully ready.
 func getNVMLDeviceCount(nvmllib nvmlClient) (int, error) {
 	// It's possible there are no GPUs available in NVML
 	// (e.g. all GPUs prepared in passthrough mode).
@@ -263,6 +269,17 @@ func getNVMLDeviceCount(nvmllib nvmlClient) (int, error) {
 	if ret != nvml.SUCCESS {
 		return 0, ret
 	}
+
+	// Verify that every device handle is obtainable. The main plugin's
+	// VisitDevices calls DeviceGetHandleByIndex immediately after DeviceGetCount,
+	// so we must confirm all handles are accessible before declaring readiness.
+	for i := range count {
+		if _, ret := nvmllib.DeviceGetHandleByIndex(i); ret != nvml.SUCCESS {
+			klog.Infof("DeviceGetHandleByIndex(%d) failed: %v — driver still initializing, retrying...", i, ret)
+			return 0, ret
+		}
+	}
+
 	return count, nil
 }
 
@@ -301,5 +318,14 @@ func isTransientNVMLError(err error) bool {
 	if !errors.As(err, &r) {
 		return false
 	}
-	return r == nvml.ERROR_UNINITIALIZED || r == nvml.ERROR_DRIVER_NOT_LOADED
+	switch r {
+	case nvml.ERROR_UNINITIALIZED,
+		nvml.ERROR_DRIVER_NOT_LOADED,
+		// Returned by DeviceGetHandleByIndex when the kernel module has
+		// registered the device count but has not yet finished initializing
+		// per-device state.
+		nvml.ERROR_NOT_READY:
+		return true
+	}
+	return false
 }
