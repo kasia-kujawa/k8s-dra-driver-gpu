@@ -40,15 +40,6 @@ import (
 	drametrics "sigs.k8s.io/dra-driver-nvidia-gpu/pkg/metrics"
 )
 
-var (
-	deviceEnumerationInterval = 5 * time.Second
-	deviceEnumerationTimeout  = 5 * time.Minute
-)
-
-type deviceEnumerator interface {
-	enumerateAllPossibleDevices() (*PerGPUAllocatableDevices, error)
-}
-
 type OpaqueDeviceConfig struct {
 	Requests []string
 	Config   runtime.Object
@@ -81,32 +72,6 @@ type DeviceState struct {
 	cplock *flock.Flock
 }
 
-// enumerateDevicesWithRetry calls enumerateAllPossibleDevices in a loop until
-// at least one device is found, the context is cancelled, or the timeout elapses.
-// Retries should prevent a ResourceSlice without any device in the spec.
-func enumerateDevicesWithRetry(ctx context.Context, nvdevlib deviceEnumerator) (*PerGPUAllocatableDevices, error) {
-	deadline := time.Now().Add(deviceEnumerationTimeout)
-	for {
-		perGPUAllocatable, err := nvdevlib.enumerateAllPossibleDevices()
-		if err != nil {
-			return nil, fmt.Errorf("error enumerating all possible devices: %w", err)
-		}
-		if len(perGPUAllocatable.allocatablesMap) > 0 {
-			return perGPUAllocatable, nil
-		}
-		if time.Now().After(deadline) {
-			klog.Warningf("No GPU devices found after %v, proceeding with empty device set", deviceEnumerationTimeout)
-			return perGPUAllocatable, nil
-		}
-		klog.Infof("No GPU devices found yet (driver may still be initializing), retrying in %v...", deviceEnumerationInterval)
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("context cancelled while waiting for GPU devices: %w", ctx.Err())
-		case <-time.After(deviceEnumerationInterval):
-		}
-	}
-}
-
 func NewDeviceState(ctx context.Context, config *Config) (*DeviceState, error) {
 	containerDriverRoot := root(config.flags.containerDriverRoot)
 	devRoot := containerDriverRoot.getDevRoot()
@@ -117,9 +82,9 @@ func NewDeviceState(ctx context.Context, config *Config) (*DeviceState, error) {
 		return nil, fmt.Errorf("failed to create device library: %w", err)
 	}
 
-	perGPUAllocatable, err := enumerateDevicesWithRetry(ctx, nvdevlib)
+	perGPUAllocatable, err := nvdevlib.enumerateAllPossibleDevices()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error enumerating all possible devices: %w", err)
 	}
 
 	hostDriverRoot := config.flags.hostDriverRoot
