@@ -35,6 +35,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	configapi "sigs.k8s.io/dra-driver-nvidia-gpu/api/nvidia.com/resource/v1beta1"
+	"sigs.k8s.io/dra-driver-nvidia-gpu/internal/driverroot"
 	"sigs.k8s.io/dra-driver-nvidia-gpu/pkg/featuregates"
 	"sigs.k8s.io/dra-driver-nvidia-gpu/pkg/flock"
 	drametrics "sigs.k8s.io/dra-driver-nvidia-gpu/pkg/metrics"
@@ -73,8 +74,8 @@ type DeviceState struct {
 }
 
 func NewDeviceState(ctx context.Context, config *Config) (*DeviceState, error) {
-	containerDriverRoot := root(config.flags.containerDriverRoot)
-	devRoot := containerDriverRoot.getDevRoot()
+	containerDriverRoot := driverroot.Root(config.flags.containerDriverRoot)
+	devRoot := containerDriverRoot.GetDevRoot()
 	klog.Infof("Using devRoot=%v", devRoot)
 
 	nvdevlib, err := newDeviceLib(containerDriverRoot)

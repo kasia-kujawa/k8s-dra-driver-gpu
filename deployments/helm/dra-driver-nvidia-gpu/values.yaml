@@ -265,6 +265,10 @@ kubeletPlugin:
     effect: NoSchedule
   kubeletRegistrarDirectoryPath: /var/lib/kubelet/plugins_registry
   kubeletPluginsDirectoryPath: /var/lib/kubelet/plugins
+  gpuReadinessInit:
+    enabled: true
+    deviceEnumerationRetrySteps: 15
+    deviceEnumerationRetryMaxInterval: 30s
   containers:
     init:
       securityContext: {}
