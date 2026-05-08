@@ -431,3 +431,55 @@ func TestEnumerateDevices(t *testing.T) {
 		})
 	}
 }
+
+func TestIsTransientNVMLError(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		err         error
+		isTransient bool
+	}{
+		"bare nvml.ERROR_UNINITIALIZED": {
+			err:         nvml.ERROR_UNINITIALIZED,
+			isTransient: true,
+		},
+		"bare nvml.ERROR_DRIVER_NOT_LOADED": {
+			err:         nvml.ERROR_DRIVER_NOT_LOADED,
+			isTransient: true,
+		},
+		"bare nvml.ERROR_GPU_IS_LOST is not transient": {
+			err:         nvml.ERROR_GPU_IS_LOST,
+			isTransient: false,
+		},
+		"single-wrap as ensureNVML returns it": {
+			err:         fmt.Errorf("ensureNVML failed: %w", nvml.ERROR_UNINITIALIZED),
+			isTransient: true,
+		},
+		"double-wrap with nvml.ERROR_UNINITIALIZED": {
+			err: fmt.Errorf("error enumerating allocatable devices: %w",
+				fmt.Errorf("ensureNVML failed: %w", nvml.ERROR_UNINITIALIZED)),
+			isTransient: true,
+		},
+		"double-wrap with ERROR_DRIVER_NOT_LOADED": {
+			err: fmt.Errorf("error enumerating allocatable devices: %w",
+				fmt.Errorf("ensureNVML failed: %w", nvml.ERROR_DRIVER_NOT_LOADED)),
+			isTransient: true,
+		},
+		"double-wrap with non-transient ERROR_GPU_IS_LOST": {
+			err: fmt.Errorf("error enumerating allocatable devices: %w",
+				fmt.Errorf("ensureNVML failed: %w", nvml.ERROR_GPU_IS_LOST)),
+			isTransient: false,
+		},
+		"plain non-NVML error": {
+			err:         fmt.Errorf("some other failure"),
+			isTransient: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.isTransient, isTransientNVMLError(tc.err))
+		})
+	}
+}

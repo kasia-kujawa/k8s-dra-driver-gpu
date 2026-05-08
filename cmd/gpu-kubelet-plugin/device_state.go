@@ -1409,6 +1409,7 @@ func warmupCDICache(cdi *CDIHandler, perGPU *PerGPUAllocatableDevices) {
 
 // isTransientNVMLError reports whether err is an NVML "not ready yet" error expected during early driver init.
 // Errors that may indicate real hardware problems are treated as permanent.
+// errors.Is walks the %w-wrap chain and matches by == against the bare nvml.Return at the bottom.
 func isTransientNVMLError(err error) bool {
 	return errors.Is(err, nvml.ERROR_UNINITIALIZED) || errors.Is(err, nvml.ERROR_DRIVER_NOT_LOADED)
 }
