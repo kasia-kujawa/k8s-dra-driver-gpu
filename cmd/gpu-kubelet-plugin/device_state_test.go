@@ -27,9 +27,25 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
+
+	"sigs.k8s.io/dra-driver-nvidia-gpu/pkg/featuregates"
 )
 
 const vfioDevName DeviceName = "gpu-vfio-0"
+
+// setPassthrough toggles the PassthroughSupport feature gate on the global featuregates singleton
+// and registers a t.Cleanup that restores it to false.
+func setPassthrough(t *testing.T, enabled bool) {
+	t.Helper()
+	require.NoError(t, featuregates.FeatureGates().SetFromMap(map[string]bool{
+		string(featuregates.PassthroughSupport): enabled,
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, featuregates.FeatureGates().SetFromMap(map[string]bool{
+			string(featuregates.PassthroughSupport): false,
+		}))
+	})
+}
 
 // fakeEnumerator implements deviceEnumerator for tests.
 // Each call to enumerateAllPossibleDevices consumes the next result in the slice,
@@ -139,7 +155,8 @@ func prepareCompletedCheckpoint(vfioName DeviceName) *Checkpoint {
 }
 
 func TestEnumerateDevicesWithRetry(t *testing.T) {
-	t.Parallel()
+	// Tests in this function manipulate the global featuregates singleton via setPassthrough,
+	// so subtests cannot run in parallel.
 
 	// fastBackoff is a zero-jitter, millisecond-interval backoff used across
 	// test cases so retries are deterministic and tests finish quickly.
@@ -259,7 +276,7 @@ func TestEnumerateDevicesWithRetry(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+			setPassthrough(t, tc.passthroughEnabled)
 
 			ctx := context.Background()
 			if tc.ctxFn != nil {
@@ -272,7 +289,7 @@ func TestEnumerateDevicesWithRetry(t *testing.T) {
 			if cp == nil {
 				cp = &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}}
 			}
-			got, err := enumerateDevicesWithRetry(ctx, tc.enumerator, tc.backoff, cp, tc.passthroughEnabled)
+			got, err := enumerateDevicesWithRetry(ctx, tc.enumerator, tc.backoff, cp)
 
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
@@ -289,77 +306,65 @@ func TestHasOrphanVfioDevices(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		perGPU             *PerGPUAllocatableDevices
-		checkpoint         *Checkpoint
-		passthroughEnabled bool
-		wantOrphan         bool
+		perGPU     *PerGPUAllocatableDevices
+		checkpoint *Checkpoint
+		wantOrphan bool
 	}{
-		"passthrough disabled — always false": {
-			perGPU:             vfioOnlyDevices(vfioDevName),
-			checkpoint:         &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
-			passthroughEnabled: false,
-			wantOrphan:         false,
-		},
 		"no devices": {
-			perGPU:             emptyDevices(),
-			checkpoint:         &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
-			passthroughEnabled: true,
-			wantOrphan:         false,
+			perGPU:     emptyDevices(),
+			checkpoint: &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
+			wantOrphan: false,
 		},
 		"gpu-type device only": {
-			perGPU:             oneDevice(),
-			checkpoint:         &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
-			passthroughEnabled: true,
-			wantOrphan:         false,
+			perGPU:     oneDevice(),
+			checkpoint: &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
+			wantOrphan: false,
 		},
 		"orphan vfio with empty checkpoint": {
-			perGPU:             vfioOnlyDevices(vfioDevName),
-			checkpoint:         &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
-			passthroughEnabled: true,
-			wantOrphan:         true,
+			perGPU:     vfioOnlyDevices(vfioDevName),
+			checkpoint: &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
+			wantOrphan: true,
 		},
 		"orphan vfio covered by PrepareCompleted checkpoint": {
-			perGPU:             vfioOnlyDevices(vfioDevName),
-			checkpoint:         prepareCompletedCheckpoint(vfioDevName),
-			passthroughEnabled: true,
-			wantOrphan:         false,
+			perGPU:     vfioOnlyDevices(vfioDevName),
+			checkpoint: prepareCompletedCheckpoint(vfioDevName),
+			wantOrphan: false,
 		},
 		"vfio with parent — not an orphan": {
-			perGPU:             vfioOnlyDevicesWithParent(vfioDevName),
-			checkpoint:         &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
-			passthroughEnabled: true,
-			wantOrphan:         false,
+			perGPU:     vfioOnlyDevicesWithParent(vfioDevName),
+			checkpoint: &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
+			wantOrphan: false,
 		},
 		"nil checkpoint treated as empty": {
-			perGPU:             vfioOnlyDevices(vfioDevName),
-			checkpoint:         nil,
-			passthroughEnabled: true,
-			wantOrphan:         true,
+			perGPU:     vfioOnlyDevices(vfioDevName),
+			checkpoint: nil,
+			wantOrphan: true,
 		},
 		"mixed devices: orphan vfio covered by PrepareCompleted checkpoint": {
-			perGPU:             mixedDevices(vfioDevName),
-			checkpoint:         prepareCompletedCheckpoint(vfioDevName),
-			passthroughEnabled: true,
-			wantOrphan:         false,
+			perGPU:     mixedDevices(vfioDevName),
+			checkpoint: prepareCompletedCheckpoint(vfioDevName),
+			wantOrphan: false,
 		},
 		"mixed devices: orphan vfio with empty checkpoint": {
-			perGPU:             mixedDevices(vfioDevName),
-			checkpoint:         &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
-			passthroughEnabled: true,
-			wantOrphan:         true,
+			perGPU:     mixedDevices(vfioDevName),
+			checkpoint: &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}},
+			wantOrphan: true,
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			got := hasOrphanVfioDevices(tc.perGPU, tc.checkpoint, tc.passthroughEnabled)
+			got := hasOrphanVfioDevices(tc.perGPU, tc.checkpoint)
 			assert.Equal(t, tc.wantOrphan, got)
 		})
 	}
 }
 
 func TestEnumerateDevices(t *testing.T) {
+	// Tests in this function manipulate the global featuregates singleton via setPassthrough,
+	// so subtests cannot run in parallel.
+
 	tests := map[string]struct {
 		enumerator         *fakeEnumerator
 		checkpoint         *Checkpoint
@@ -409,8 +414,8 @@ func TestEnumerateDevices(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			got, err := enumerateDevices(tc.enumerator, tc.checkpoint, tc.passthroughEnabled)
+			setPassthrough(t, tc.passthroughEnabled)
+			got, err := enumerateDevices(tc.enumerator, tc.checkpoint)
 
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)

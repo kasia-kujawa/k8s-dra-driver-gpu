@@ -223,7 +223,7 @@ func NewDeviceState(ctx context.Context, config *Config) (*DeviceState, error) {
 
 	// Try enumerating devices
 	// If nothing is discovered yet, background retries take over via InitAllocatableBackground.
-	perGPUAllocatable, err := enumerateDevices(nvdevlib, cp, featuregates.Enabled(featuregates.PassthroughSupport))
+	perGPUAllocatable, err := enumerateDevices(nvdevlib, cp)
 	if err != nil {
 		return nil, err
 	}
@@ -1316,17 +1316,15 @@ func (s *DeviceState) InitAllocatableBackground(ctx context.Context, backoff wai
 	if s.AllocatableReady() {
 		return nil
 	}
-	passthroughEnabled := featuregates.Enabled(featuregates.PassthroughSupport)
 	var cp *Checkpoint
-	var err error
-	if passthroughEnabled {
+	if featuregates.Enabled(featuregates.PassthroughSupport) {
+		var err error
 		cp, err = s.getCheckpoint(ctx)
 		if err != nil {
 			return fmt.Errorf("unable to read checkpoint before background enumeration: %w", err)
 		}
 	}
-	var perGPU *PerGPUAllocatableDevices
-	perGPU, err = enumerateDevicesWithRetry(ctx, s.nvdevlib, backoff, cp, passthroughEnabled)
+	perGPU, err := enumerateDevicesWithRetry(ctx, s.nvdevlib, backoff, cp)
 	if err != nil {
 		return err
 	}
@@ -1347,7 +1345,7 @@ func (s *DeviceState) finalizeAllocatable(perGPU *PerGPUAllocatableDevices) {
 }
 
 // enumerateDevices performs GPU enumeration attempt.
-func enumerateDevices(nvdevlib deviceEnumerator, cp *Checkpoint, passthroughEnabled bool) (*PerGPUAllocatableDevices, error) {
+func enumerateDevices(nvdevlib deviceEnumerator, cp *Checkpoint) (*PerGPUAllocatableDevices, error) {
 	perGPU, err := nvdevlib.enumerateAllPossibleDevices()
 	if err != nil {
 		if isTransientNVMLError(err) {
@@ -1360,21 +1358,23 @@ func enumerateDevices(nvdevlib deviceEnumerator, cp *Checkpoint, passthroughEnab
 		klog.Infof("No GPU devices discovered on enumeration attempt; will retry in background")
 		return nil, nil
 	}
-	if hasOrphanVfioDevices(perGPU, cp, passthroughEnabled) {
-		klog.Infof("Orphan vfio devices found on enumeration attempt; will retry in background")
-		return nil, nil
+	if featuregates.Enabled(featuregates.PassthroughSupport) {
+		if hasOrphanVfioDevices(perGPU, cp) {
+			klog.Infof("Orphan vfio devices found on enumeration attempt; will retry in background")
+			return nil, nil
+		}
 	}
 	return perGPU, nil
 }
 
 // enumerateDevicesWithRetry retries until at least one device is found, the context is cancelled, or the retry budget is exhausted.
 // Transient NVML errors are retried, all other errors propagate immediately.
-func enumerateDevicesWithRetry(ctx context.Context, nvdevlib deviceEnumerator, backoff wait.Backoff, cp *Checkpoint, passthroughEnabled bool) (*PerGPUAllocatableDevices, error) {
+func enumerateDevicesWithRetry(ctx context.Context, nvdevlib deviceEnumerator, backoff wait.Backoff, cp *Checkpoint) (*PerGPUAllocatableDevices, error) {
 	totalSteps := backoff.Steps
 	var perGPUAllocatable *PerGPUAllocatableDevices
 	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
 		var err error
-		perGPUAllocatable, err = enumerateDevices(nvdevlib, cp, passthroughEnabled)
+		perGPUAllocatable, err = enumerateDevices(nvdevlib, cp)
 		if err != nil {
 			return false, err
 		}
@@ -1426,10 +1426,7 @@ func deviceEnumerationBackoff(flags *Flags) wait.Backoff {
 
 // hasOrphanVfioDevices returns true when there are vfio devices with a nil parent GPU (nvml not yet initialized)
 // that are not covered by a PrepareCompleted checkpoint entry (which means they were legitimately handed to a VM).
-func hasOrphanVfioDevices(perGPU *PerGPUAllocatableDevices, cp *Checkpoint, passthroughEnabled bool) bool {
-	if !passthroughEnabled {
-		return false
-	}
+func hasOrphanVfioDevices(perGPU *PerGPUAllocatableDevices, cp *Checkpoint) bool {
 	// Build set of vfio device names that have a PrepareCompleted checkpoint entry.
 	prepared := make(map[DeviceName]struct{})
 	if cp != nil && cp.V2 != nil {

@@ -165,9 +165,11 @@ func NewDriver(ctx context.Context, config *Config) (*driver, error) {
 	}
 	driver.healthcheck = healthcheck
 
-	if featuregates.Enabled(featuregates.NVMLDeviceHealthCheck) && state.AllocatableReady() {
-		if err := driver.startDeviceHealthMonitor(ctx, config); err != nil {
-			return nil, err
+	if featuregates.Enabled(featuregates.NVMLDeviceHealthCheck) {
+		if state.AllocatableReady() {
+			if err := driver.startDeviceHealthMonitor(ctx, config); err != nil {
+				return nil, err
+			}
 		}
 	}
 
