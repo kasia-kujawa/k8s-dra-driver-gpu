@@ -168,7 +168,7 @@ func newApp() *cli.App {
 		&cli.IntFlag{
 			Name:        "device-enumeration-retry-steps",
 			Usage:       "Maximum number of GPU enumeration attempts.",
-			Value:       15,
+			Value:       5,
 			Destination: &flags.deviceEnumerationRetrySteps,
 			EnvVars:     []string{"DEVICE_ENUMERATION_RETRY_STEPS"},
 		},
