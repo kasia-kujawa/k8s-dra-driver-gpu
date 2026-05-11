@@ -223,7 +223,11 @@ func (d *driver) backgroundInit(ctx context.Context, config *Config) {
 	}
 
 	if featuregates.Enabled(featuregates.DynamicMIG) {
-		d.state.DestroyUnknownMIGDevices(ctx)
+		if !d.state.IsMigCapable() {
+			klog.Warningf("DynamicMIG enabled but no MIG capable GPU found on this node; falling back to legacy Full GPU support")
+		} else {
+			d.state.DestroyUnknownMIGDevices(ctx)
+		}
 	}
 
 	if featuregates.Enabled(featuregates.NVMLDeviceHealthCheck) {
