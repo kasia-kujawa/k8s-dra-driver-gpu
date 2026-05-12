@@ -26,8 +26,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
-
-	"sigs.k8s.io/dra-driver-nvidia-gpu/pkg/featuregates"
 )
 
 // ErrDeviceEnumerationTimeout is returned by enumerateDevicesWithRetry
@@ -38,27 +36,73 @@ type deviceEnumerator interface {
 	enumerateAllPossibleDevices() (*PerGPUAllocatableDevices, error)
 }
 
-// enumerateDevices performs GPU enumeration attempt.
+// enumerateDevices performs a single GPU enumeration attempt and decides whether the result is ready or a retry is needed.
+//
+// The decision tree, per Varun's spec on PR #1009:
+//   - empty allocatable, empty checkpoint               -> retry (first-boot, NVML initialising)
+//   - empty allocatable, non-empty checkpoint           -> accept (only happens if GPU is unhealthy, retrying won't help)
+//   - allocatable has any gpu/mig device                -> accept
+//   - allocatable is vfio-only, non-empty checkpoint    -> accept
+//   - allocatable is vfio-only, empty checkpoint        -> retry
+
+// A non-empty checkpoint means we are past first boot — see comments in checkpointHasPreparedDevices.
 func enumerateDevices(nvdevlib deviceEnumerator, cp *Checkpoint) (*PerGPUAllocatableDevices, error) {
 	perGPU, err := nvdevlib.enumerateAllPossibleDevices()
 	if err != nil {
 		if isTransientNVMLError(err) {
-			klog.Infof("Transient NVML error on enumeration attempt; will retry in background: %v", err)
+			klog.Infof("Transient NVML error on enumeration attempt; will retry: %v", err)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("error enumerating all possible devices: %w", err)
 	}
+
 	if len(perGPU.allocatablesMap) == 0 {
-		klog.Infof("No GPU devices discovered on enumeration attempt; will retry in background")
+		if checkpointHasPreparedDevices(cp) {
+			klog.Infof("No GPU devices discovered via NVML but the checkpoint has prepared devices, not retrying (unhealthy device state, retry won't help)")
+			return perGPU, nil
+		}
+		klog.Infof("No GPU devices discovered on enumeration attempt; will retry")
 		return nil, nil
 	}
-	if featuregates.Enabled(featuregates.PassthroughSupport) {
-		if hasOrphanVfioDevices(perGPU, cp) {
-			klog.Infof("Orphan vfio devices found on enumeration attempt; will retry in background")
-			return nil, nil
+
+	if allocatableHasNonVfio(perGPU) {
+		return perGPU, nil
+	}
+
+	// Allocatable is vfio-only, if checkpoint is not empty, then GPU is ready
+	if checkpointHasPreparedDevices(cp) {
+		return perGPU, nil
+	}
+	klog.Infof("Only vfio devices visible and checkpoint is empty; will retry (NVML may still be initialising)")
+	return nil, nil
+}
+
+// allocatableHasNonVfio reports whether perGPU contains any non-vfio (gpu or mig) device.
+// Returns false for both empty maps and vfio-only maps.
+func allocatableHasNonVfio(perGPU *PerGPUAllocatableDevices) bool {
+	for _, devices := range perGPU.allocatablesMap {
+		for _, dev := range devices {
+			if dev.Type() != VfioDeviceType {
+				return true
+			}
 		}
 	}
-	return perGPU, nil
+	return false
+}
+
+// checkpointHasPreparedDevices reports whether cp contains any prepared device (of any type, in any claim state).
+func checkpointHasPreparedDevices(cp *Checkpoint) bool {
+	if cp == nil || cp.V2 == nil {
+		return false
+	}
+	for _, claim := range cp.V2.PreparedClaims {
+		for _, group := range claim.PreparedDevices {
+			if len(group.Devices) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // enumerateDevicesWithRetry retries until at least one device is found, the context is cancelled, or the retry budget is exhausted.
@@ -103,40 +147,4 @@ func deviceEnumerationBackoff(flags *Flags) wait.Backoff {
 		Cap:      flags.deviceEnumerationRetryMaxInterval,
 		Steps:    flags.deviceEnumerationRetrySteps,
 	}
-}
-
-// hasOrphanVfioDevices returns true when there are vfio devices with a nil parent GPU (nvml not yet initialized)
-// that are not covered by a PrepareCompleted checkpoint entry (which means they were legitimately handed to a VM).
-func hasOrphanVfioDevices(perGPU *PerGPUAllocatableDevices, cp *Checkpoint) bool {
-	// Build set of vfio device names that have a PrepareCompleted checkpoint entry.
-	prepared := make(map[DeviceName]struct{})
-	if cp != nil && cp.V2 != nil {
-		for _, claim := range cp.V2.PreparedClaims {
-			if claim.CheckpointState != ClaimCheckpointStatePrepareCompleted {
-				continue
-			}
-			for _, group := range claim.PreparedDevices {
-				for _, dev := range group.Devices {
-					if dev.Type() == VfioDeviceType {
-						prepared[dev.Vfio.Device.DeviceName] = struct{}{}
-					}
-				}
-			}
-		}
-	}
-	for _, devices := range perGPU.allocatablesMap {
-		for _, dev := range devices {
-			if dev.Type() != VfioDeviceType {
-				continue
-			}
-			if dev.Vfio.parent != nil {
-				continue
-			}
-			// Parentless vfio device — check if it was legitimately prepared.
-			if _, ok := prepared[dev.CanonicalName()]; !ok {
-				return true
-			}
-		}
-	}
-	return false
 }

@@ -1304,13 +1304,10 @@ func (s *DeviceState) InitAllocatableBackground(ctx context.Context) error {
 	if s.AllocatableReady() {
 		return nil
 	}
-	var cp *Checkpoint
-	if featuregates.Enabled(featuregates.PassthroughSupport) {
-		var err error
-		cp, err = s.getCheckpoint(ctx)
-		if err != nil {
-			return fmt.Errorf("unable to read checkpoint before background enumeration: %w", err)
-		}
+
+	cp, err := s.getCheckpoint(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to read checkpoint before background enumeration: %w", err)
 	}
 	backoff := deviceEnumerationBackoff(s.config.flags)
 	perGPU, err := enumerateDevicesWithRetry(ctx, s.nvdevlib, backoff, cp)
