@@ -27,7 +27,6 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
@@ -1301,7 +1300,7 @@ func (s *DeviceState) AllocatableReady() bool {
 }
 
 // InitAllocatableBackground runs the enumeration retry loop, on success populates perGPUAllocatable and closes allocatableReady.
-func (s *DeviceState) InitAllocatableBackground(ctx context.Context, backoff wait.Backoff) error {
+func (s *DeviceState) InitAllocatableBackground(ctx context.Context) error {
 	if s.AllocatableReady() {
 		return nil
 	}
@@ -1313,6 +1312,7 @@ func (s *DeviceState) InitAllocatableBackground(ctx context.Context, backoff wai
 			return fmt.Errorf("unable to read checkpoint before background enumeration: %w", err)
 		}
 	}
+	backoff := deviceEnumerationBackoff(s.config.flags)
 	perGPU, err := enumerateDevicesWithRetry(ctx, s.nvdevlib, backoff, cp)
 	if err != nil {
 		return err

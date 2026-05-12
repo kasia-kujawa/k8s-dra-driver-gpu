@@ -216,8 +216,7 @@ func (d *driver) startDeviceHealthMonitor(ctx context.Context, config *Config) e
 func (d *driver) backgroundInit(ctx context.Context, config *Config) {
 	defer d.wg.Done()
 
-	backoff := deviceEnumerationBackoff(config.flags)
-	if err := d.state.InitAllocatableBackground(ctx, backoff); err != nil {
+	if err := d.state.InitAllocatableBackground(ctx); err != nil {
 		d.reportInitErr(fmt.Errorf("background device enumeration: %w", err))
 		return
 	}
