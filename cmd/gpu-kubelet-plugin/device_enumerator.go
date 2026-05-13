@@ -26,6 +26,8 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
+
+	"sigs.k8s.io/dra-driver-nvidia-gpu/pkg/featuregates"
 )
 
 // ErrDeviceEnumerationTimeout is returned by enumerateDevicesWithRetry
@@ -38,43 +40,39 @@ type deviceEnumerator interface {
 
 // enumerateDevices performs a single GPU enumeration attempt and decides whether the result is ready or a retry is needed.
 //
-// The decision tree, per Varun's spec on PR #1009:
-//   - empty allocatable, empty checkpoint               -> retry (first-boot, NVML initialising)
-//   - empty allocatable, non-empty checkpoint           -> accept (only happens if GPU is unhealthy, retrying won't help)
-//   - allocatable has any gpu/mig device                -> accept
-//   - allocatable is vfio-only, non-empty checkpoint    -> accept
-//   - allocatable is vfio-only, empty checkpoint        -> retry
-
-// A non-empty checkpoint means we are past first boot — see comments in checkpointHasPreparedDevices.
+// The decision tree:
+//   - empty allocatable                                  -> retry
+//   - allocatable has any gpu/mig device                 -> accept
+//   - allocatable is vfio-only, empty checkpoint         -> retry
+//   - allocatable is vfio-only, non-empty checkpoint     -> accept
 func enumerateDevices(nvdevlib deviceEnumerator, cp *Checkpoint) (*PerGPUAllocatableDevices, error) {
 	perGPU, err := nvdevlib.enumerateAllPossibleDevices()
 	if err != nil {
 		if isTransientNVMLError(err) {
-			klog.Infof("Transient NVML error on enumeration attempt; will retry: %v", err)
+			klog.Infof("Transient NVML error on enumeration attempt, retrying: %v", err)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("error enumerating all possible devices: %w", err)
 	}
 
 	if len(perGPU.allocatablesMap) == 0 {
-		if checkpointHasPreparedDevices(cp) {
-			klog.Infof("No GPU devices discovered via NVML but the checkpoint has prepared devices, not retrying (unhealthy device state, retry won't help)")
-			return perGPU, nil
-		}
-		klog.Infof("No GPU devices discovered on enumeration attempt; will retry")
+		// Caveat: we may end up in this state due to unhealthy GPUs. This needs to be revisited in the future
+		klog.Infof("No GPU devices discovered on enumeration attempt, retrying")
 		return nil, nil
 	}
 
-	if allocatableHasNonVfio(perGPU) {
-		return perGPU, nil
+	if featuregates.Enabled(featuregates.PassthroughSupport) {
+		// If allocatable has only vfio devices:
+		//   - empty checkpoint     → retry (GPU may not be fully initialized)
+		//   - non-empty checkpoint → ready
+		if !allocatableHasNonVfio(perGPU) && !checkpointHasPreparedDevices(cp) {
+			klog.Infof("Only vfio devices visible and checkpoint is empty, retrying")
+			return nil, nil
+		}
 	}
 
-	// Allocatable is vfio-only, if checkpoint is not empty, then GPU is ready
-	if checkpointHasPreparedDevices(cp) {
-		return perGPU, nil
-	}
-	klog.Infof("Only vfio devices visible and checkpoint is empty; will retry (NVML may still be initialising)")
-	return nil, nil
+	// Any non-vfio device present means enumeration was successful — proceed.
+	return perGPU, nil
 }
 
 // allocatableHasNonVfio reports whether perGPU contains any non-vfio (gpu or mig) device.
@@ -107,6 +105,13 @@ func checkpointHasPreparedDevices(cp *Checkpoint) bool {
 
 // enumerateDevicesWithRetry retries until at least one device is found, the context is cancelled, or the retry budget is exhausted.
 // Transient NVML errors are retried, all other errors propagate immediately.
+//
+// Why we retry — see issue #1008: the GPU may not be fully initialised when the gpu kubelet plugin starts.
+// Before this retry was added, a ResourceSlice could be published with no devices and the only fix was to restart the plugin.
+//
+// Retrying lets the plugin start up before the driver is ready and re-publish a populated ResourceSlice once enumeration succeeds.
+// If the retry budget is exhausted, we return ErrDeviceEnumerationTimeout so the caller can fail rather than silently keep the
+// ResourceSlice empty. Transient NVML errors are retried, all other errors propagate immediately.
 func enumerateDevicesWithRetry(ctx context.Context, nvdevlib deviceEnumerator, backoff wait.Backoff, cp *Checkpoint) (*PerGPUAllocatableDevices, error) {
 	totalSteps := backoff.Steps
 	var perGPUAllocatable *PerGPUAllocatableDevices

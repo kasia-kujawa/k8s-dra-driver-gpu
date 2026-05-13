@@ -182,6 +182,15 @@ func NewDriver(ctx context.Context, config *Config) (*driver, error) {
 		return nil, err
 	}
 
+	// If no device was found during device enumeration in NewDeviceState (issue #1008),
+	// retry in the background instead of blocking startup.
+	//
+	// Why background — if we block, kubelet may time out while registering the gpu plugin.
+	// Helper.PublishResources can be called more than once, so the plugin starts with an empty ResourceSlice
+	// and updates it from backgroundInit once we have devices.
+	//
+	// backgroundInit also runs the steps that need the device list to be ready:
+	// MIG cleanup, health monitor startup, and republish.
 	if !state.AllocatableReady() {
 		driver.wg.Add(1)
 		go driver.backgroundInit(ctx, config)

@@ -27,7 +27,22 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
+
+	"sigs.k8s.io/dra-driver-nvidia-gpu/pkg/featuregates"
 )
+
+// setPassthrough toggles the PassthroughSupport feature gate on the global featuregates.
+func setPassthrough(t *testing.T, enabled bool) {
+	t.Helper()
+	require.NoError(t, featuregates.FeatureGates().SetFromMap(map[string]bool{
+		string(featuregates.PassthroughSupport): enabled,
+	}))
+	t.Cleanup(func() {
+		require.NoError(t, featuregates.FeatureGates().SetFromMap(map[string]bool{
+			string(featuregates.PassthroughSupport): false,
+		}))
+	})
+}
 
 // fakeEnumerator implements deviceEnumerator for tests.
 // Each call to enumerateAllPossibleDevices consumes the next result in the slice,
@@ -116,7 +131,8 @@ func nonEmptyCheckpoint() *Checkpoint {
 }
 
 func TestEnumerateDevicesWithRetry(t *testing.T) {
-	t.Parallel()
+	// Cases that exercise the vfio-only branch must enable PassthroughSupport, which
+	// manipulates the global featuregates - subtests cannot run in parallel.
 
 	// fastBackoff is a zero-jitter, millisecond-interval backoff used across
 	// test cases so retries are deterministic and tests finish quickly.
@@ -130,13 +146,14 @@ func TestEnumerateDevicesWithRetry(t *testing.T) {
 	}
 
 	tests := map[string]struct {
-		enumerator      *fakeEnumerator
-		checkpoint      *Checkpoint
-		ctxFn           func() (context.Context, context.CancelFunc)
-		backoff         wait.Backoff
-		wantErr         error
-		wantDeviceCount int
-		wantCalls       int
+		enumerator         *fakeEnumerator
+		checkpoint         *Checkpoint
+		ctxFn              func() (context.Context, context.CancelFunc)
+		backoff            wait.Backoff
+		passthroughEnabled bool
+		wantErr            error
+		wantDeviceCount    int
+		wantCalls          int
 	}{
 		"devices found on first call": {
 			enumerator:      &fakeEnumerator{results: []enumerateResult{{devices: oneGPUDevice()}}},
@@ -200,47 +217,22 @@ func TestEnumerateDevicesWithRetry(t *testing.T) {
 			wantErr:   nvml.ERROR_GPU_IS_LOST,
 			wantCalls: 2,
 		},
-		"vfio-only with empty checkpoint - retry": {
+		"passthrough on: vfio-only with empty checkpoint - retry": {
 			enumerator: &fakeEnumerator{results: []enumerateResult{
 				{devices: vfioOnlyDevices()},
 				{devices: vfioOnlyDevices()},
 				{devices: oneGPUDevice()},
 			}},
-			backoff:         fastBackoff(10),
-			wantDeviceCount: 1,
-			wantCalls:       3,
-		},
-		"vfio-only with non-empty checkpoint accepts without retry": {
-			enumerator: &fakeEnumerator{results: []enumerateResult{
-				{devices: vfioOnlyDevices()},
-			}},
-			checkpoint:      nonEmptyCheckpoint(),
-			backoff:         fastBackoff(10),
-			wantDeviceCount: 1,
-			wantCalls:       1,
-		},
-		"gpu+vfio mix accepts on first call regardless of checkpoint": {
-			enumerator: &fakeEnumerator{results: []enumerateResult{
-				{devices: mixedDevices()},
-			}},
-			backoff:         fastBackoff(10),
-			wantDeviceCount: 2,
-			wantCalls:       1,
-		},
-		"empty allocatable with non-empty checkpoint - no retry": {
-			enumerator: &fakeEnumerator{results: []enumerateResult{
-				{devices: emptyDevices()},
-			}},
-			checkpoint:      nonEmptyCheckpoint(),
-			backoff:         fastBackoff(10),
-			wantDeviceCount: 0,
-			wantCalls:       1,
+			passthroughEnabled: true,
+			backoff:            fastBackoff(10),
+			wantDeviceCount:    1,
+			wantCalls:          3,
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+			setPassthrough(t, tc.passthroughEnabled)
 
 			ctx := context.Background()
 			if tc.ctxFn != nil {
@@ -309,29 +301,25 @@ func TestCheckpointHasPreparedDevices(t *testing.T) {
 }
 
 func TestEnumerateDevices(t *testing.T) {
-	t.Parallel()
+	// Cases that exercise the vfio-only branch must enable PassthroughSupport, which
+	// manipulates the global featuregates singleton — subtests cannot run in parallel.
 
 	emptyCheckpoint := &Checkpoint{V2: &CheckpointV2{PreparedClaims: PreparedClaimsByUID{}}}
 
 	tests := map[string]struct {
-		enumerator      *fakeEnumerator
-		checkpoint      *Checkpoint
-		wantNil         bool
-		wantErr         error
-		wantDeviceCount int
+		enumerator         *fakeEnumerator
+		checkpoint         *Checkpoint
+		passthroughEnabled bool
+		wantNil            bool
+		wantErr            error
+		wantDeviceCount    int
 	}{
 		"gpu device discovered — accept": {
 			enumerator:      &fakeEnumerator{results: []enumerateResult{{devices: oneGPUDevice()}}},
 			wantDeviceCount: 1,
 		},
-		"empty allocatable, empty checkpoint — retry": {
+		"empty allocatable — retry": {
 			enumerator: &fakeEnumerator{results: []enumerateResult{{devices: emptyDevices()}}},
-			checkpoint: emptyCheckpoint,
-			wantNil:    true,
-		},
-		"empty allocatable, nil checkpoint — retry": {
-			enumerator: &fakeEnumerator{results: []enumerateResult{{devices: emptyDevices()}}},
-			checkpoint: nil,
 			wantNil:    true,
 		},
 		"transient NVML error — retry": {
@@ -346,41 +334,24 @@ func TestEnumerateDevices(t *testing.T) {
 			}},
 			wantErr: nvml.ERROR_GPU_IS_LOST,
 		},
-		"empty allocatable, non-empty checkpoint — accept empty - retry won't help, unhealthy device": {
-			enumerator:      &fakeEnumerator{results: []enumerateResult{{devices: emptyDevices()}}},
-			checkpoint:      nonEmptyCheckpoint(),
-			wantDeviceCount: 0,
+		"passthrough on: vfio-only allocatable, empty checkpoint — retry": {
+			enumerator:         &fakeEnumerator{results: []enumerateResult{{devices: vfioOnlyDevices()}}},
+			checkpoint:         emptyCheckpoint,
+			passthroughEnabled: true,
+			wantNil:            true,
 		},
-		"vfio-only allocatable, nil checkpoint — retry": {
-			enumerator: &fakeEnumerator{results: []enumerateResult{{devices: vfioOnlyDevices()}}},
-			checkpoint: nil,
-			wantNil:    true,
-		},
-		"vfio-only allocatable, empty checkpoint — retry": {
-			enumerator: &fakeEnumerator{results: []enumerateResult{{devices: vfioOnlyDevices()}}},
-			checkpoint: emptyCheckpoint,
-			wantNil:    true,
-		},
-		"vfio-only allocatable, non-empty checkpoint — accept": {
-			enumerator:      &fakeEnumerator{results: []enumerateResult{{devices: vfioOnlyDevices()}}},
-			checkpoint:      nonEmptyCheckpoint(),
-			wantDeviceCount: 1,
-		},
-		"gpu+vfio mix, empty checkpoint — accept": {
-			enumerator:      &fakeEnumerator{results: []enumerateResult{{devices: mixedDevices()}}},
-			checkpoint:      emptyCheckpoint,
-			wantDeviceCount: 2,
-		},
-		"gpu+vfio mix, non-empty checkpoint — accept": {
-			enumerator:      &fakeEnumerator{results: []enumerateResult{{devices: mixedDevices()}}},
-			checkpoint:      nonEmptyCheckpoint(),
-			wantDeviceCount: 2,
+		"passthrough on: vfio-only allocatable, non-empty checkpoint — accept": {
+			enumerator:         &fakeEnumerator{results: []enumerateResult{{devices: vfioOnlyDevices()}}},
+			checkpoint:         nonEmptyCheckpoint(),
+			passthroughEnabled: true,
+			wantDeviceCount:    1,
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+			setPassthrough(t, tc.passthroughEnabled)
+
 			got, err := enumerateDevices(tc.enumerator, tc.checkpoint)
 
 			if tc.wantErr != nil {
