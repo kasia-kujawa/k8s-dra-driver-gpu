@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -86,6 +87,14 @@ func NewDeviceState(ctx context.Context, config *Config) (*DeviceState, error) {
 	perGPUAllocatable, err := nvdevlib.enumerateAllPossibleDevices()
 	if err != nil {
 		return nil, fmt.Errorf("error enumerating all possible devices: %w", err)
+	}
+
+	// Enumeration returned nothing — the ResourceSlice we would publish from
+	// this state would be empty. Log the state of /dev/nvidia* nodes to help
+	// diagnose whether the kernel module failed to create them, or whether
+	// they exist but NVML still returned zero devices.
+	if len(perGPUAllocatable.allocatablesMap) == 0 {
+		logNvidiaDevNodesState(devRoot)
 	}
 
 	hostDriverRoot := config.flags.hostDriverRoot
@@ -192,6 +201,43 @@ func NewDeviceState(ctx context.Context, config *Config) (*DeviceState, error) {
 	}
 
 	return state, nil
+}
+
+// logNvidiaDevNodesState logs which /dev/nvidia* character devices exist under
+// devRoot. Called from NewDeviceState when NVML enumeration returned zero GPUs,
+// to distinguish two failure modes:
+//
+//   - the kernel module did not create the device nodes (filesystem state
+//     matches NVML's report — likely a driver/init-order issue), or
+//   - the device nodes exist but NVML still returned zero (filesystem state
+//     contradicts NVML — points at an NVML/library bug rather than a missing
+//     device-files race).
+//
+// See https://github.com/kubernetes-sigs/dra-driver-nvidia-gpu/pull/1009 for
+// background. The gpu-readiness-init init container performs the same shape of
+// check before this binary starts; if init said the nodes were present but
+// enumeration here returned zero, the discrepancy is recorded by this log.
+func logNvidiaDevNodesState(devRoot string) {
+	devDir := filepath.Join(devRoot, "dev")
+	matches, err := filepath.Glob(filepath.Join(devDir, "nvidia*"))
+	if err != nil {
+		klog.Warningf("diagnostic: error globbing nvidia* under %s: %v", devDir, err)
+		return
+	}
+	if len(matches) == 0 {
+		klog.Warningf("diagnostic: NVML enumerated 0 GPUs and no /dev/nvidia* nodes are present under %s", devDir)
+		return
+	}
+	entries := make([]string, 0, len(matches))
+	for _, p := range matches {
+		info, err := os.Stat(p)
+		if err != nil {
+			entries = append(entries, fmt.Sprintf("%s (stat error: %v)", p, err))
+			continue
+		}
+		entries = append(entries, fmt.Sprintf("%s (mode=%s)", p, info.Mode()))
+	}
+	klog.Warningf("diagnostic: NVML enumerated 0 GPUs but /dev/nvidia* nodes are present under %s: %v", devDir, entries)
 }
 
 func (s *DeviceState) Prepare(ctx context.Context, claim *resourceapi.ResourceClaim) ([]kubeletplugin.Device, error) {
