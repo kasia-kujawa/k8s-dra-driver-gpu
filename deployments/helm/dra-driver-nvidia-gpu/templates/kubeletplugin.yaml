@@ -51,6 +51,46 @@ spec:
       securityContext:
         {{- toYaml .Values.kubeletPlugin.podSecurityContext | nindent 8 }}
       initContainers:
+      - name: driver-root-setup
+        image: {{ include "dra-driver-nvidia-gpu.fullimage" . }}
+        securityContext:
+          privileged: true
+        command: [bash, -c]
+        args:
+        - |-
+          DRIVER_READY_FILE="/run/nvidia/validations/driver-ready"
+          TARGET_DRIVER_ROOT="/run/nvidia/driver"
+
+          # Wait for GPU operator to create driver-ready file
+          echo "Waiting for ${DRIVER_READY_FILE} ..."
+          while [ ! -f "${DRIVER_READY_FILE}" ]; do
+            sleep 5
+          done
+
+          # Read actual driver root from GPU operator validation file
+          ACTUAL_DRIVER_ROOT=$(grep '^NVIDIA_DRIVER_ROOT=' "${DRIVER_READY_FILE}" | cut -d= -f2)
+          if [ -z "${ACTUAL_DRIVER_ROOT}" ]; then
+            echo "NVIDIA_DRIVER_ROOT not found in ${DRIVER_READY_FILE}, exiting"
+            exit 1
+          fi
+
+          echo "GPU operator reports driver root: ${ACTUAL_DRIVER_ROOT}"
+
+          # Nothing to do if already at target location
+          if [ "${ACTUAL_DRIVER_ROOT}" = "${TARGET_DRIVER_ROOT}" ]; then
+            echo "Driver root already at ${TARGET_DRIVER_ROOT}, nothing to mount"
+            exit 0
+          fi
+
+          # Create target directory and bind-mount actual driver root there.
+          mkdir -p "${TARGET_DRIVER_ROOT}"
+          mount --rbind "${ACTUAL_DRIVER_ROOT}" "${TARGET_DRIVER_ROOT}"
+          mount -o remount,exec "${TARGET_DRIVER_ROOT}"
+          echo "Bind-mounted ${ACTUAL_DRIVER_ROOT} -> ${TARGET_DRIVER_ROOT}"
+        volumeMounts:
+        - name: host-run-nvidia
+          mountPath: /run/nvidia
+          mountPropagation: Bidirectional
       - name: init-container
         image: {{ include "dra-driver-nvidia-gpu.fullimage" . }}
         securityContext:
@@ -336,6 +376,10 @@ spec:
       - name: cdi
         hostPath:
           path: /var/run/cdi
+      - name: host-run-nvidia
+        hostPath:
+          path: /run/nvidia
+          type: DirectoryOrCreate
       - name: driver-root-parent
         hostPath:
           # If nvidiaDriverRoot == "/" then its parent is itself. Otherwise, get
